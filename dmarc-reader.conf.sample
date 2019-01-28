@@ -1,0 +1,76 @@
+-- dmarc-reader.conf  -*- mode: lua -*-
+
+local M = {}
+
+-- Read the named file in under the specified data directory
+-- M.data_directory and return the contents.
+function read_file(name)
+    local f, err = io.open(M.data_directory .. "/" .. name, "r")
+    if f == nil then
+        return nil
+    end
+    local r = f:read("*a")
+    f:close()
+    return r
+end
+
+-- set the directory for data and log files
+M.data_directory = arg[0]:match("(.*/)")     -- dir from configuration file
+--M.data_directory = "."                       -- current directory
+--M.data_directory = "/var/lib/dmarc-reports"  -- absolute path
+
+
+M.database = {
+    -- name of the database to connect to
+    database = "@CHANGE-TO-DBNAME",
+    -- user to sign in as
+    user = "@CHANGE-TO-USERNAME@",
+    -- user's password, for secure passsword, use: pwgen -n -1 64 1
+    password = "@CHANGE-TO-SECURE-PASSWORD@",
+    -- host to connect to (default is localhost)
+    -- values that start with / are directory of unix domain socket
+    -- (directory must contain the Postgresql socket: ".s.PGSQL.5432"
+    --  on FreeBSD use: "/tmp"
+    --  on Ubuntu use:  "/run/postgresql")
+    host = "",
+    -- port to bind to (default is 5432)
+    port = "",
+    -- whether or not to use SSL (default is require, this is not the default for libpq)
+    sslmode = "disable",
+    -- maximum wait for connection, in seconds. Zero or not specified means wait indefinitely.
+    timeout = 0,
+    -- cert file location, file must contain PEM encoded data
+    sslcert = "",
+    -- key file location, file must contain PEM encoded data
+    sslkey = "",
+    -- location of the root certificate file, file must contain PEM encoded data
+    sslrootcert = ""
+}
+
+
+-- configure global or specific logger channel levels
+M.logging = {
+    size = 1048576,
+    count = 100,
+
+    -- set to true to log to console
+    console = true,
+
+    -- set the logging level for various modules
+    -- modules not overridden with get the value from DEFAULT
+    -- the default value for DEFAULT is "critical"
+    levels = {
+        -- DEFAULT = "debug",
+        -- DEFAULT = "error",
+        -- DEFAULT = "warn",
+        -- DEFAULT = "info",
+        DEFAULT = "debug",
+
+        -- some specific logging channels: (there may be others)
+        -- main = "info",
+    }
+}
+
+
+-- return the complete configuration
+return M

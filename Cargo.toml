@@ -1,0 +1,17 @@
+[package]
+name = "dmarc-reader"
+version = "0.1.0"
+authors = ["Christopher Hall <hsw@bitmark.com>"]
+edition = "2018"
+
+[dependencies]
+clap = {version = "*", features = ["yaml"]}
+flate2 = "*"
+zip = "*"
+serde = "*"
+serde_derive = "*"
+serde-xml-rs = "*"
+chrono = "*"
+rlua = "*"
+postgres = "*"
+postgres-derive = "*"

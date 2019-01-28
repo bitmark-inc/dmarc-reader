@@ -1,0 +1,29 @@
+---
+name: dmarc-reader
+version: "0.1.0"
+author: Christopher Hall <hsw@bitmark.com>
+about: load XML DMARC files into database
+args:
+    - verbose:
+        short: v
+        long: verbose
+        multiple: true
+        help: verbosity level
+    - debug:
+        short: D
+        long: debug
+        help: print debug information
+    - config:
+        short: c
+        long: config
+        value_name: FILE
+        help: sets configuration file
+        takes_value: true
+        empty_values: false
+        required: true
+    - FILES:
+        required: true
+        multiple: true
+        #last: true
+        index: 1
+        help: gzipped xml files

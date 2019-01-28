@@ -1,0 +1,304 @@
+#!/bin/sh
+# install the schema SQL files from script directory into PostgreSQL
+# extracting the password from the configuration file provided
+
+ERROR()
+{
+  printf 'error: '
+  printf "$@"
+  printf '\n'
+  exit 1
+}
+
+VERBOSE()
+{
+  [ X"${verbose}" = X"no" ] && return 0
+  printf "$@"
+  printf "\n"
+}
+
+USAGE()
+{
+  if [ -n "$1" ]
+  then
+    printf 'error: '
+    printf "$@"
+    printf '\n'
+  fi
+  echo usage: $(basename "$0") '<options>'
+  echo '       --help             -h            this message'
+  echo '       --verbose          -v            more messages'
+  echo '       --drop             -D            initially drop database (ignore indicator)'
+  echo '       --create           -c            create the database (implied by drop)'
+  echo '       --pg-host=HOST     -H HOST       postgresql host'
+  echo '       --pg-pass=PASS     -P PORT       postgresql password'
+  echo '       --using=CONF       -u CONF       autodetect configuration from configuration file'
+  echo '       --indicator=FILE   -i FILE       do not run if this files exists, --drop overrides'
+  echo '       --jq-username=FILTER             jq filter to get configuration ['"${jq_username}"']'
+  echo '       --jq-database=FILTER             jq filter to get configuration ['"${jq_database}"']'
+  echo '       --jq-password=FILTER             jq filter to get configuration ['"${jq_password}"']'
+  echo '       --debug            -d            show debug information'
+  exit 1
+}
+
+# main program
+
+verbose=no
+debug=no
+drop=no
+create=no
+pg_host=
+config_file=
+indicator_file=
+jq_username='.database.user'
+jq_database='.database.database'
+jq_password='.database.password'
+
+# determine the database superuser
+os="$(uname -s)"
+case "${os}" in
+  (Linux)
+    superuser=postgres
+    ;;
+  (FreeBSD)
+    superuser=pgsql
+    superuser=postgres
+    ;;
+  (Darwin)
+    superuser=postgres
+    ;;
+  (*)
+    ERROR "unsupported OS: ${os}"
+    ;;
+esac
+
+# ensure running as root
+[ X"$(id -u)" = X"0" ] || ERROR "run this script as root"
+
+# schema parameters
+dbTag='@CHANGE-TO-DBNAME@'
+usTag='@CHANGE-TO-USERNAME@'
+pwTag='@CHANGE-TO-SECURE-PASSWORD@'
+schema_dir="$(dirname "$0")"
+schema_dir="$(realpath "${schema_dir}")"
+
+# ensure that required programs are installed
+for program in jq sed psql
+do
+  if ! which "${program}" > /dev/null
+  then
+    ERROR 'cannot find program: %s' "${program}"
+  fi
+done
+
+# process options
+getopt=
+for g in /usr/local/bin/getopt /usr/local/opt/gnu-getopt/bin/getopt /usr/bin/getopt
+do
+  [ -x "${g}" ] && getopt="${g}" && break
+done
+[ -x "${getopt}" ] || ERROR 'no suitable getopt was found'
+args=$(${getopt} -o hvDcH:P:u:i:d --long=help,verbose,drop,create,pg-host:,pg-pass:,using:,indicator:,jq-database:,jq-password:,debug -- "$@") ||exit 1
+
+# replace the arguments with the parsed values
+eval set -- "${args}"
+
+while :
+do
+  case "$1" in
+    (-v|--verbose)
+      verbose=yes
+      ;;
+
+    (-D|--drop)
+      drop=yes
+      create=yes
+      ;;
+
+    (-c|--create)
+      create=yes
+      ;;
+
+    (-H|--pg-host)
+      pg_host="$2"
+      shift
+      ;;
+
+    (-P|--pg-pass)
+      PGPASSWORD="$2"
+      shift
+      ;;
+
+    (-u|--using)
+      config_file="$2"
+      shift
+      ;;
+
+    (-i|--indicator)
+      indicator_file="$2"
+      shift
+      ;;
+
+    (--jq-database)
+      jq_database="$2"
+      shift
+      ;;
+
+    (--jq-username)
+      jq_username="$2"
+      shift
+      ;;
+
+    (--jq-password)
+      jq_password="$2"
+      shift
+      ;;
+
+    (-d|--debug)
+      debug=yes
+      ;;
+
+    (--)
+      shift
+      break
+      ;;
+
+    (-h|--help)
+      USAGE
+      ;;
+
+    (*)
+      USAGE 'invalid argument: %s' "$1"
+      ;;
+  esac
+  shift
+done
+
+have_files=yes
+[ $# -eq 0 ] && have_files=no
+
+if [ -z "${config_file}" ]
+then
+  for f in /usr/local/etc/updaterd.conf /etc/updaterd.conf
+  do
+    if [ -f "${f}" ]
+    then
+      config_file="${f}"
+      break
+    fi
+  done
+fi
+
+[ -z "${config_file}" ] && USAGE 'configuration file cannot be blank'
+[ -f "${config_file}" ] || USAGE 'configuration file: "%s" does not exist' "${config_file}"
+[ -z "${jq_database}" ] && USAGE 'filter item --jq-database cannot be blank'
+[ -z "${jq_username}" ] && USAGE 'filter item --jq-username cannot be blank'
+[ -z "${jq_password}" ] && USAGE 'filter item --jq-password cannot be blank'
+
+# check type of config file
+mode=not_set
+case "${config_file}" in
+  (*.json)
+    mode=json
+    ;;
+  (*.conf)
+    mode=lua
+    ;;
+  (*)
+    USAGE 'unsupported config file: "%s"  require .json or .conf format' "${config_file}"
+    ;;
+esac
+
+# enable debug mode
+[ X"${debug}" = X"yes" ] && set -x
+
+# do not run if indicator is present and no --drop is present
+if [ -f "${indicator_file}" -a X"${drop}" = X"no" ]
+then
+  printf 'indicator file: "%s" is present, command ignored\n' "${indicator_file}"
+  exit 0
+fi
+
+
+# parse file into compact_json for further processing
+case "${mode}" in
+  (json)
+    compact_json=$(jq --compact-output '.' "${config_file}")
+    ;;
+  (lua)
+    lua=''
+    for l in lua53 lua52 lua
+    do
+      which "${l}" > /dev/null && lua="${l}" && break
+    done
+    [ -z "${lua}" ] && ERROR 'cannot find lua'
+    compact_json=$(${lua} -e '
+      arg = {[0]="'"${config_file}"'"}
+      m,e = loadfile(arg[0])
+      print("{\"database\":{")
+      print("\"user\":\""..m().database.user.."\",")
+      print("\"database\":\""..m().database.database.."\",")
+      print("\"password\":\""..m().database.password.."\"")
+      print("}}")
+    ')
+    ;;
+  (ucl)
+    if which ucl_tool > /dev/null
+    then
+      compact_json=$(ucl_tool --in="${config_file}" --format=compact_json)
+    elif which json2hcl > /dev/null
+    then
+      compact_json=$(json2hcl --reverse < "${config_file}")
+    else
+      ERROR 'cannot find either ucl_tool or json2jhcl'
+    fi
+    ;;
+  (*)
+    ERROR 'invalid configuration parsing mode: %s' "${mode}"
+    ;;
+esac
+
+# extract required data
+database=$(printf '%s' "${compact_json}" | jq --raw-output "${jq_database}")
+username=$(printf '%s' "${compact_json}" | jq --raw-output "${jq_username}")
+password=$(printf '%s' "${compact_json}" | jq --raw-output "${jq_password}")
+
+# check tags
+[ -z "${database}" -o X"${database}" = X"${dbTag}" ] && ERROR "edit '${config_file}' and a valid database name e.g. bitmark"
+[ -z "${username}" -o X"${username}" = X"${usTag}" ] && ERROR "edit '${config_file}' and a valid user name e.g. updaterd"
+[ -z "${password}" -o X"${password}" = X"${pwTag}" ] && ERROR "edit '${config_file}' and set a secure password e.g. use: pwgen -n -1 64 1"
+
+# prepare the schema modifications
+sed_cmd="s/${dbTag}/${database}/g;s/${usTag}/${username}/g;s/${pwTag}/${password}/;s/\\\\echo[^\\\\]*\\\\q/-- ignored/"
+[ X"${drop}" = X"yes" ] && sed_cmd="${sed_cmd};s/--@DROP@//"
+[ X"${create}" = X"yes" ] && sed_cmd="${sed_cmd};s/--@CREATE@//"
+
+# load the database
+if [ X"${have_files}" = X"yes" ]
+then
+  # first check all files exist
+  for schema in "$@"
+  do
+    [ -f "${schema}" ] || ERROR 'missing file: %s' "${schema}"
+  done
+  # install all files on command line
+  for schema in "$@"
+  do
+    VERBOSE 'processing: %s' "${schema}"
+    sed "${sed_cmd}" < "${schema}" | su -m "${superuser}" -c "psql postgres"
+  done
+else
+  # install the default schema.sql
+  schema="${schema_dir}/schema.sql"
+  [ -f "${schema}" ] || ERROR 'missing file: %s' "${schema}"
+  VERBOSE 'processing: %s' "${schema}"
+  if [ -n "${pg_host}" ] && [ -n "${PGPASSWORD}" ]
+  then
+    sed "${sed_cmd}" < "${schema}" | psql -h ${pg_host} postgres postgres
+  else
+    sed "${sed_cmd}" < "${schema}" | su -m "${superuser}" -c "psql postgres"
+  fi
+fi
+
+# create indicator file
+[ -n "${indicator_file}" ] && touch "${indicator_file}"
